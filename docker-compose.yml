@@ -1,0 +1,52 @@
+services:
+  sen-app:
+    image: ${SEN_IMAGE:-100.91.132.35:5050/sen:0.1.0}
+    pull_policy: always
+    container_name: sen-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "9995:9995"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./data:/app/data
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:8.2.4-alpine3.22
+    container_name: sen-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-192mb}
+      - --maxmemory-policy
+      - allkeys-lru
+      - --auto-aof-rewrite-percentage
+      - "100"
+      - --auto-aof-rewrite-min-size
+      - "32mb"
+    volumes:
+      - ./redis-data:/data
+
+  caddy:
+    image: caddy:2.11-alpine
+    container_name: sen-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    env_file:
+      - .env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy-data:/data
+      - ./caddy-config:/config
+    depends_on:
+      - sen-app

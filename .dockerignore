@@ -1,0 +1,9 @@
+node_modules
+bun.lock
+.git
+.env
+uploads
+data
+redis-data
+caddy-data
+caddy-config
