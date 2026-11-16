@@ -1,4 +1,4 @@
-import { integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 export const folders = sqliteTable('folders', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -17,7 +17,7 @@ export const files = sqliteTable('files', {
   contentHash: text('content_hash'),
   public: integer('public', { mode: 'boolean' }).notNull().default(false),
   rateLimitOverride: integer('rate_limit_override')
-});
+}, (table) => [index('files_folder_idx').on(table.folderId)]);
 
 export const apiKeys = sqliteTable('api_keys', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -46,7 +46,8 @@ export const apiKeyFiles = sqliteTable(
     fileId: integer('file_id').notNull().references(() => files.id, { onDelete: 'cascade' })
   },
   (table) => ({
-    pk: primaryKey({ columns: [table.apiKeyId, table.fileId] })
+    pk: primaryKey({ columns: [table.apiKeyId, table.fileId] }),
+    fileIndex: index('api_key_files_file_idx').on(table.fileId)
   })
 );
 

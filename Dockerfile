@@ -2,10 +2,11 @@ FROM oven/bun:1.3.9-alpine
 
 WORKDIR /app
 
-COPY package.json ./
-RUN bun install --production --frozen-lockfile || bun install --production
+COPY package.json bun.lock ./
+RUN bun install --production --frozen-lockfile
 
-COPY . .
+COPY src ./src
+COPY drizzle ./drizzle
 
 RUN mkdir -p /app/uploads /app/data
 

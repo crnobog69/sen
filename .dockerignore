@@ -1,7 +1,11 @@
 node_modules
-bun.lock
+.bun-*
+.gitea
+.github
+docker-build.*
 .git
 .env
+.env.*
 uploads
 data
 redis-data

@@ -53,28 +53,15 @@ bun run dev
 
 Подразумевани URL је `http://0.0.0.0:9995`.
 
-## Buildx + Registry (RPi5 deploy)
+### Docker izdanje na Gitcrn-u
 
-Ако на RPi5 желиш да само повлачи слику из локалног registry-ја:
+U Gitcrn podešavanjima naloga, u **Applications**, napravi token sa dozvolom `write:package`. U **Settings → Actions → Secrets** repozitorijuma ili vlasnika dodaj `REGISTRY_USERNAME` (nalog vlasnika tokena) i `REGISTRY_TOKEN` (vrednost tokena). Nalog mora imati pravo objave paketa za vlasnika slike.
 
-1. На build машини направи и push-уј ARM64 image:
+U direktorijumu projekta pokreni `.\docker-build.ps1` na Windowsu ili `bash docker-build.sh` na Linuxu. Skripta snima lokalne izmene i šalje trenutnu granu i tag na Gitcrn. Tag koristi beogradsko vreme u formatu `DD.MM.YYYY_HH-mm-ss`. Runner `linux_amd64` objavljuje isti tag i `latest` za AMD64 i ARM64. Za lokalni build koristi `-Local` ili `--local`.
 
-```bash
-docker buildx build --platform linux/arm64 -t 100.91.132.35:5050/sen:0.1.0 --push .
-```
+Gitcrn registry radi preko HTTP-a na internoj mreži. Na Docker mašinama koje se prijavljuju ili povlače sliku, u postojeću listu `insecure-registries` Docker daemon-a dodaj `100.91.132.35:5000` i primeni podešavanje. Za privatne slike prijavi se sa `docker login 100.91.132.35:5000` (za preuzimanje je dovoljan token sa `read:package`).
 
-2. На RPi5 у `.env` постави:
-
-```env
-SEN_IMAGE=100.91.132.35:5050/sen:0.1.0
-```
-
-3. На RPi5 повуци и подигни сервисе:
-
-```bash
-docker compose pull
-docker compose up -d
-```
+Compose podrazumevano koristi `100.91.132.35:5000/vltc/sen:latest`. U `.env` možeš postaviti `SEN_IMAGE` na punu putanju sa konkretnim tagom. Za objavljenu sliku pokreni `docker compose pull`, pa `docker compose up -d`.
 
 ## Руте
 

@@ -17,7 +17,8 @@ caddy-meta/
 .bun-tmp/
 
 # Drizzle local metadata cache
-drizzle/meta/
+drizzle/meta/*
+!drizzle/meta/_journal.json
 
 # OS / editor / logs
 .DS_Store

@@ -1,6 +1,7 @@
 services:
   sen-app:
-    image: ${SEN_IMAGE:-100.91.132.35:5050/sen:0.1.0}
+    image: ${SEN_IMAGE:-100.91.132.35:5000/vltc/sen:latest}
+    build: .
     pull_policy: always
     container_name: sen-app
     restart: unless-stopped

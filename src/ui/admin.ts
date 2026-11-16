@@ -8,6 +8,7 @@ type Notice = {
 };
 
 type FolderView = {
+  fileCount: number;
   id: number;
   ime: string;
   quotaMax: number;
@@ -74,6 +75,10 @@ export type DashboardData = {
     }>;
   };
   folders: FolderView[];
+  selectedFolderId?: number;
+  folderPage: { page: number; pages: number };
+  catalogPage: { page: number; pages: number };
+  folderFiles: FileView[];
   files: FileView[];
   apiKeys: ApiKeyView[];
   apiKeyFolders: Assignment[];
@@ -1651,8 +1656,9 @@ function shell(title: string, body: string) {
       };
 
       const initState = () => {
-        activateTab(window.__senTab || safeGet(LS_TAB_KEY) || 'home');
-        activateFolder(window.__senFolder || '');
+        const linkedTab = window.location.hash.slice(1);
+        activateTab(window.__senTab || (TABS.includes(linkedTab) ? linkedTab : safeGet(LS_TAB_KEY)) || 'home');
+        activateFolder(document.querySelector('[data-folder-files]')?.dataset.folderFiles);
         activateLayout(window.__senLayout || safeGet(LS_LAYOUT_KEY) || 'grid');
         closeMenus();
         prepareThumbVideos();
@@ -1784,13 +1790,6 @@ function shell(title: string, body: string) {
         if (tab) {
           event.preventDefault();
           activateTab(tab.dataset.tab || 'home');
-          return;
-        }
-
-        const folderBtn = event.target.closest('[data-folder-id]');
-        if (folderBtn) {
-          event.preventDefault();
-          activateFolder(folderBtn.dataset.folderId || '');
           return;
         }
 
@@ -2032,22 +2031,40 @@ export function renderDashboardContent(data: DashboardData) {
   const globalQuotaMax = data.folders.reduce((sum, folder) => sum + folder.quotaMax, 0);
   const globalQuotaPercent = globalQuotaMax > 0 ? (globalQuotaUsed / globalQuotaMax) * 100 : 0;
 
+  const dashboardLink = (folder = data.selectedFolderId, page = data.folderPage.page, catalog = data.catalogPage.page) =>
+    `/admin/dash?folder=${folder ?? ''}&amp;page=${page}&amp;catalog=${catalog}`;
+  function pagination(tab: 'folderi' | 'organizacija' | 'kljucevi') {
+    const { page, pages } = tab === 'folderi' ? data.folderPage : data.catalogPage;
+    if (pages < 2) return '';
+    const href = (n: number) => (tab === 'folderi'
+      ? dashboardLink(data.selectedFolderId, n) : dashboardLink(data.selectedFolderId, data.folderPage.page, n)) + '#' + tab;
+    return `<nav class="cluster" aria-label="Странице фајлова">
+      ${page > 1 ? `<a class="btn small" href="${href(page - 1)}">Претходна</a>` : ''}
+      <form class="cluster" action="/admin/dash#${tab}" method="get">
+        <input type="hidden" name="folder" value="${data.selectedFolderId ?? ''}" />
+        <input type="hidden" name="${tab === 'folderi' ? 'catalog' : 'page'}" value="${tab === 'folderi' ? data.catalogPage.page : data.folderPage.page}" />
+        <label>Страница <input type="number" name="${tab === 'folderi' ? 'page' : 'catalog'}"
+          min="1" max="${pages}" value="${page}" required style="width:5rem" /> од ${pages}</label>
+        <button class="btn small" type="submit">Иди</button>
+      </form>
+      ${page < pages ? `<a class="btn small" href="${href(page + 1)}">Следећа</a>` : ''}
+    </nav>`;
+  }
+
   const folderButtons = data.folders
     .map((folder) => {
-      const count = data.files.filter((file) => file.folderId === folder.id).length;
-      return `<button type="button" class="folder-btn" data-folder-id="${folder.id}">
+      return `<a href="${dashboardLink(folder.id, 1)}#folderi" class="folder-btn" data-folder-id="${folder.id}">
         <i data-lucide="folder"></i>
         <span>${escapeHtml(folder.ime)}</span>
-        <span class="folder-meta">${count}</span>
-      </button>`;
+        <span class="folder-meta">${folder.fileCount}</span>
+      </a>`;
     })
     .join('');
 
   const folderFilePanels = data.folders
+    .filter((folder) => folder.id === data.selectedFolderId)
     .map((folder) => {
-      const filesInFolder = data.files.filter((file) => file.folderId === folder.id);
-
-      const cards = filesInFolder
+      const cards = data.folderFiles
         .map((file) => {
           const fileName = fileNameFromPath(file.serverskaPutanja);
           const ext = fileExt(fileName);
@@ -2139,6 +2156,7 @@ export function renderDashboardContent(data: DashboardData) {
         <div class="file-grid layout-grid" data-file-grid>
           ${cards || '<div class="text-muted">Нема фајлова у овом фолдеру.</div>'}
         </div>
+        ${pagination('folderi')}
       </section>`;
     })
     .join('');
@@ -2379,6 +2397,7 @@ export function renderDashboardContent(data: DashboardData) {
             <h3 class="panel-title"><i data-lucide="files"></i> Фајлови · assignment + view</h3>
           </header>
           <div class="panel-body org-file-list">
+            ${pagination('organizacija')}
             ${orgFilesRows || '<span class="text-muted">Нема фајлова.</span>'}
           </div>
         </article>
@@ -2388,6 +2407,7 @@ export function renderDashboardContent(data: DashboardData) {
     </section>
 
     <section class="tab-section" data-tab-panel="kljucevi">
+      ${pagination('kljucevi')}
       <div class="key-grid">
         <article class="panel">
           <header class="panel-head">

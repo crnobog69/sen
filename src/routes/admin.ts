@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, count, eq, inArray } from 'drizzle-orm';
 import { deleteCookie, getSignedCookie, setSignedCookie } from 'hono/cookie';
 import { Hono, type Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
@@ -123,10 +123,28 @@ function isHx(c: Context<AppBindings>) {
   return c.req.header('HX-Request') === 'true';
 }
 
-async function loadDashboardData(): Promise<DashboardData> {
-  const [settingsRow, foldersRows, filesRows, keyRows, keyFoldersRows, keyFilesRows] = await Promise.all([
+const PAGE_SIZE = 50;
+
+function filePage(raw: string | null, total: number) {
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const page = Math.min(parseId(raw ?? '') ?? 1, pages);
+  return { page, pages };
+}
+
+async function loadDashboardData(params: URLSearchParams): Promise<DashboardData> {
+  const [settingsRow, foldersRows, counts, keyRows, keyFoldersRows] = await Promise.all([
     readSettings(),
-    db.select().from(folders),
+    db.select().from(folders).orderBy(folders.id),
+    db.select({ folderId: files.folderId, total: count() }).from(files).groupBy(files.folderId),
+    db.select().from(apiKeys),
+    db.select().from(apiKeyFolders)
+  ]);
+  const totals = new Map(counts.map((row) => [row.folderId, row.total]));
+  const selectedFolder = foldersRows.find((f) => f.id === Number(params.get('folder'))) ?? foldersRows[0];
+  const folderPage = filePage(params.get('page'), totals.get(selectedFolder?.id ?? 0) ?? 0);
+  const catalogPage = filePage(params.get('catalog'), counts.reduce((sum, row) => sum + row.total, 0));
+
+  const listFiles = (page: number, folderId?: number) =>
     db
       .select({
         id: files.id,
@@ -140,20 +158,31 @@ async function loadDashboardData(): Promise<DashboardData> {
         rateLimitOverride: files.rateLimitOverride
       })
       .from(files)
-      .innerJoin(folders, eq(folders.id, files.folderId)),
-    db.select().from(apiKeys),
-    db.select().from(apiKeyFolders),
-    db.select().from(apiKeyFiles)
+      .innerJoin(folders, eq(folders.id, files.folderId))
+      .where(folderId === undefined ? undefined : eq(files.folderId, folderId))
+      .orderBy(files.id)
+      .limit(PAGE_SIZE)
+      .offset((page - 1) * PAGE_SIZE);
+
+  const [folderFiles, catalogFiles, traffic] = await Promise.all([
+    selectedFolder ? listFiles(folderPage.page, selectedFolder.id) : [],
+    listFiles(catalogPage.page),
+    readTrafficStats(keyRows.map((row) => row.id))
   ]);
-  const traffic = await readTrafficStats(keyRows.map((row) => row.id));
+  const keyFilesRows = catalogFiles.length ? await db.select().from(apiKeyFiles)
+    .where(inArray(apiKeyFiles.fileId, catalogFiles.map((f) => f.id))) : [];
 
   return {
     settings: {
       globalRateLimit: settingsRow.globalRateLimit,
       globalDefaultQuota: settingsRow.globalDefaultQuota
     },
-    folders: foldersRows,
-    files: filesRows,
+    folders: foldersRows.map((f) => ({ ...f, fileCount: totals.get(f.id) ?? 0 })),
+    selectedFolderId: selectedFolder?.id,
+    folderPage,
+    catalogPage,
+    folderFiles,
+    files: catalogFiles,
     apiKeys: keyRows,
     apiKeyFolders: keyFoldersRows,
     apiKeyFiles: keyFilesRows,
@@ -161,8 +190,11 @@ async function loadDashboardData(): Promise<DashboardData> {
   };
 }
 
-async function htmlDashboard(notice?: { text: string; error?: boolean; secret?: string }) {
-  const data = await loadDashboardData();
+async function htmlDashboard(c: Context<AppBindings>, notice?: DashboardData['notice']) {
+  const url = new URL(c.req.url);
+  const currentUrl = c.req.header('HX-Current-URL');
+  if (notice && currentUrl && URL.canParse(currentUrl)) url.search = new URL(currentUrl).search;
+  const data = await loadDashboardData(url.searchParams);
   return renderDashboardContent({ ...data, notice });
 }
 
@@ -174,7 +206,7 @@ async function actionResponse(
   secret?: string
 ) {
   if (isHx(c)) {
-    return c.html(await htmlDashboard({ text, error, secret }), status);
+    return c.html(await htmlDashboard(c, { text, error, secret }), status);
   }
   if (error) {
     return c.json({ greska: text }, status);
@@ -237,12 +269,12 @@ secured.post('/logout', async (c) => {
 });
 
 secured.get('/dash', async (c) => {
-  const content = await htmlDashboard();
+  const content = await htmlDashboard(c);
   return c.html(renderDashboardPage(content));
 });
 
 secured.get('/dash/content', async (c) => {
-  return c.html(await htmlDashboard());
+  return c.html(await htmlDashboard(c));
 });
 
 secured.get('/file/:id/raw', async (c) => {

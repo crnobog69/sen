@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { eq, isNull } from 'drizzle-orm';
+import { eq, isNull, sql } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/libsql/migrator';
 import { config } from '../config.ts';
 import { hashApiKey, isHashedApiKey } from '../services/api-keys.ts';
@@ -89,6 +89,12 @@ async function backfillFileContentHashes() {
 export async function bootstrapDatabase() {
   await ensureSqlitePathExists();
   await migrate(db, { migrationsFolder: './drizzle' });
+  // Older installations generated their own journal timestamps. An installation
+  // with only the first migration can therefore have skipped the content_hash migration.
+  const columns = await db.all<{ name: string }>(sql`PRAGMA table_info(files)`);
+  if (!columns.some((column) => column.name === 'content_hash')) {
+    await db.run(sql`ALTER TABLE files ADD content_hash text`);
+  }
   await migrateApiKeysToHash();
   await backfillFileContentHashes();
   await tightenSqlitePermissions();
