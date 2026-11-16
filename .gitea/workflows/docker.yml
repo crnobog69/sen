@@ -15,11 +15,21 @@ permissions:
 jobs:
   docker:
     runs-on: linux_amd64
+    container:
+      image: node:22-alpine3.23
     env:
       IMAGE: 100.91.132.35:5000/vltc/sen
       DOCKER_BUILD_SUMMARY: 'false'
       DOCKER_BUILD_RECORD_UPLOAD: 'false'
     steps:
+      - name: Priprema alata za Docker build
+        shell: sh
+        run: |
+          apk add --no-cache bash git docker-cli docker-cli-buildx tzdata
+          node --version
+          docker version
+          docker buildx version
+
       - uses: actions/checkout@v4
         with:
           github-server-url: http://100.91.132.35:5000
