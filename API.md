@@ -26,7 +26,7 @@ Odgovor:
 
 Sen ima 3 nivoa pristupa:
 
-1. Javni (`/f/:public_id`) - bez autentikacije.
+1. Javni (`/f/:public_id`) - opcioni `X-API-Key` za limit i statistiku po ključu.
 2. Privatni (`/private/*`) - potreban `X-API-Key` header.
 3. Admin (`/admin/*`) - potrebna prijava i cookie sesija (`sen_admin`).
 
@@ -68,8 +68,10 @@ Response header-i:
 
 - `X-RateLimit-Limit`
 - `X-RateLimit-Remaining`
+- `X-RateLimit-Scope` ima vrednost `file`, `folder`, `api` ili `global`.
 
 Kad se predje limit: `429` + `{"greska":"Прекорачен лимит захтева."}`.
+Zaglavlje `Retry-After` daje broj sekundi do sledećeg minutnog prozora.
 
 Ako je limit postavljen na `0`, takodje `429`.
 
@@ -86,6 +88,8 @@ Quota je po folderu:
 ## GET `/f/:public_id`
 
 Vraca javni fajl (`public=true`). Ako fajl nije javan ili ne postoji, vraca `404`.
+Sa validnim `X-API-Key` primenjuje se isti prioritet limita kao i kod privatnih ruta.
+Ako je zaglavlje poslato sa nevažećim ključem, zahtev za javni fajl vraća `401`.
 Ako fajl ima izracunat hash, odgovor sadrzi `ETag: "sha256-<contentHash>"`.
 
 Primer:
@@ -261,11 +265,11 @@ Napomena: API kljucevi se u bazi cuvaju kao SHA-256 hash. Puni kljuc se prikazuj
 
 ## PATCH `/admin/apikey/:id`
 
-Polja:
+Prihvata formu ili JSON. Izostavljena polja zadržavaju postojeće vrednosti.
 
 - `can_upload`
 - `can_delete`
-- `rate_limit_override`
+- `rate_limit_override` kao nenegativan ceo broj. Prazna vrednost u formi ili `null` u JSON-u uklanja override. Vrednost `0` blokira zahteve na koje se primenjuje.
 
 ## POST `/admin/apikey/:id/revoke`
 

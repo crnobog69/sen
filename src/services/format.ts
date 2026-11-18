@@ -16,13 +16,20 @@ export function asBoolean(input: unknown): boolean {
   if (typeof input === 'string') {
     return ['1', 'true', 'on', 'yes', 'da'].includes(input.toLowerCase());
   }
-  return false;
+  return input === 1;
+}
+
+export function parseRateLimitOverride(input: unknown): number | null | undefined {
+  if (input === null || (typeof input === 'string' && input.trim() === '')) return null;
+  if (typeof input !== 'number' && typeof input !== 'string') return undefined;
+  const value = Number(input);
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 export function sanitizeFileName(name: string): string {
   const trimmed = name.trim();
   const clean = trimmed.replace(/[^a-zA-Z0-9._-]+/g, '_');
-  return clean.length > 0 ? clean : 'fajl';
+  return clean.length > 0 && clean !== '.' && clean !== '..' ? clean : 'fajl';
 }
 
 export function escapeHtml(raw: string): string {

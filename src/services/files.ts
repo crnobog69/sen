@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, exists, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db } from '../db/client.ts';
 import { files, folders } from '../db/schema.ts';
@@ -25,53 +25,52 @@ export async function createFileRecord(input: {
   }
 
   const savedPath = await writeUpload(folder.ime, input.file);
-  const contentHash = await hashStoredFileSha256(savedPath);
-
   try {
-    const inserted = await db.transaction(async (tx) => {
-      const created = await tx
-        .insert(files)
-        .values({
-          publicId: nanoid(14),
-          serverskaPutanja: savedPath,
-          folderId: folder.id,
-          velicina: size,
-          contentHash,
-          public: input.isPublic,
-          rateLimitOverride: input.rateLimitOverride
-        })
-        .returning();
-
-      await tx
-        .update(folders)
+    const contentHash = await hashStoredFileSha256(savedPath);
+    const publicId = nanoid(14);
+    const eligible = db.select({
+      id: sql<number>`NULL`.as('id'),
+      publicId: sql<string>`${publicId}`.as('public_id'),
+      serverskaPutanja: sql<string>`${savedPath}`.as('serverska_putanja'),
+      folderId: folders.id,
+      velicina: sql<number>`${size}`.as('velicina'),
+      contentHash: sql<string>`${contentHash}`.as('content_hash'),
+      public: sql<boolean>`${Number(input.isPublic)}`.as('public'),
+      rateLimitOverride: sql<number | null>`${input.rateLimitOverride}`.as('rate_limit_override')
+    }).from(folders).where(and(
+      eq(folders.id, folder.id),
+      sql`${folders.quotaUsed} + ${size} <= ${folders.quotaMax}`
+    ));
+    const inserted = db.select({ id: files.id }).from(files).where(eq(files.publicId, publicId));
+    const [[created]] = await db.batch([
+      db.insert(files).select(eligible).returning(),
+      db.update(folders)
         .set({ quotaUsed: sql`${folders.quotaUsed} + ${size}` })
-        .where(eq(folders.id, folder.id));
+        .where(and(eq(folders.id, folder.id), exists(inserted)))
+    ]);
+    if (created) return created;
 
-      return created[0];
-    });
-
-    return inserted;
+    const existingFolder = await db.query.folders.findFirst({ where: eq(folders.id, folder.id) });
+    if (!existingFolder) throw new FolderNotFoundError('Фолдер не постоји.');
+    throw new QuotaExceededError('Квота је прекорачена.');
   } catch (error) {
-    await deleteStoredFile(savedPath);
+    await deleteStoredFile(savedPath).catch(cleanupError => {
+      console.error('Грешка при чишћењу неуспешног отпремања:', cleanupError);
+    });
     throw error;
   }
 }
 
 export async function deleteFileRecord(fileId: number) {
-  const file = await db.query.files.findFirst({ where: eq(files.id, fileId) });
-  if (!file) {
-    throw new FileNotFoundError('Фајл не постоји.');
-  }
-
-  await db.transaction(async (tx) => {
-    await tx.delete(files).where(eq(files.id, file.id));
-    await tx
-      .update(folders)
-      .set({
-        quotaUsed: sql`CASE WHEN ${folders.quotaUsed} - ${file.velicina} < 0 THEN 0 ELSE ${folders.quotaUsed} - ${file.velicina} END`
-      })
-      .where(eq(folders.id, file.folderId));
-  });
+  const size = db.select({ size: files.velicina }).from(files).where(eq(files.id, fileId));
+  const folderId = db.select({ id: files.folderId }).from(files).where(eq(files.id, fileId));
+  const [, [file]] = await db.batch([
+    db.update(folders)
+      .set({ quotaUsed: sql`MAX(0, ${folders.quotaUsed} - (${size}))` })
+      .where(sql`${folders.id} = (${folderId})`),
+    db.delete(files).where(eq(files.id, fileId)).returning()
+  ]);
+  if (!file) throw new FileNotFoundError('Фајл не постоји.');
 
   try {
     await deleteStoredFile(file.serverskaPutanja);
@@ -94,11 +93,6 @@ export async function updateFileMeta(fileId: number, input: { isPublic?: boolean
 
   const updated = await db.update(files).set(payload).where(eq(files.id, fileId)).returning();
   return updated[0] ?? null;
-}
-
-export async function folderContainsFile(folderId: number) {
-  const row = await db.query.files.findFirst({ where: eq(files.folderId, folderId) });
-  return Boolean(row);
 }
 
 export async function existsFolderById(folderId: number) {

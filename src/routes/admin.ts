@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { and, count, eq, inArray } from 'drizzle-orm';
+import { and, count, eq, inArray, lte, notExists } from 'drizzle-orm';
 import { deleteCookie, getSignedCookie, setSignedCookie } from 'hono/cookie';
 import { Hono, type Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
@@ -19,13 +19,12 @@ import {
   createFileRecord,
   deleteFileRecord,
   FileNotFoundError,
-  folderContainsFile,
   FolderNotFoundError,
   QuotaExceededError,
   updateFileMeta
 } from '../services/files.ts';
 import { hashApiKey } from '../services/api-keys.ts';
-import { asBoolean, asNullableNumber } from '../services/format.ts';
+import { asBoolean, asNullableNumber, parseRateLimitOverride } from '../services/format.ts';
 import { readTrafficStats } from '../services/rate-limit.ts';
 import { readSettings } from '../services/settings.ts';
 import type { AppBindings } from '../types.ts';
@@ -45,6 +44,7 @@ const BYTES_IN_GB = 1024 ** 3;
 const ADMIN_LOGIN_MAX_ATTEMPTS = 8;
 const ADMIN_LOGIN_WINDOW_SECONDS = 15 * 60;
 const ADMIN_LOGIN_BLOCK_SECONDS = 30 * 60;
+const INVALID_RATE_LIMIT = 'Лимит мора бити цео број већи или једнак нули или празно поље.';
 
 const ADMIN_LOGIN_KEY = {
   fail: (ip: string) => `admin:login:fail:${ip}`,
@@ -365,8 +365,14 @@ secured.patch('/file/:id', async (c) => {
   }
 
   const body = await c.req.parseBody();
-  const isPublic = asBoolean(body.public);
-  const rateLimitOverride = asNullableNumber(body.rate_limit_override);
+  const isPublic = body.public === undefined ? undefined : asBoolean(body.public);
+  const rateLimitOverride = parseRateLimitOverride(body.rate_limit_override);
+  if (body.rate_limit_override !== undefined && rateLimitOverride === undefined) {
+    return actionResponse(c, INVALID_RATE_LIMIT, 400, true);
+  }
+  if (isPublic === undefined && rateLimitOverride === undefined) {
+    return actionResponse(c, 'Нема измена за чување.', 400, true);
+  }
 
   const updated = await updateFileMeta(fileId, {
     isPublic,
@@ -421,17 +427,25 @@ secured.patch('/folder/:id', async (c) => {
 
   const body = await c.req.parseBody();
   const quotaMaxRaw = gbToBytes(body.quota_max_gb) ?? asNullableNumber(body.quota_max);
-  const rateLimitOverride = asNullableNumber(body.rate_limit_override);
-
-  if (quotaMaxRaw !== null && quotaMaxRaw < folder.quotaUsed) {
-    return actionResponse(c, 'Нова квота не сме бити мања од већ заузете.', 409, true);
+  const rateLimitOverride = parseRateLimitOverride(body.rate_limit_override);
+  if (body.rate_limit_override !== undefined && rateLimitOverride === undefined) {
+    return actionResponse(c, INVALID_RATE_LIMIT, 400, true);
   }
 
   const payload: Partial<typeof folders.$inferInsert> = {};
   if (quotaMaxRaw !== null) payload.quotaMax = quotaMaxRaw;
-  payload.rateLimitOverride = rateLimitOverride;
+  if (rateLimitOverride !== undefined) payload.rateLimitOverride = rateLimitOverride;
+  if (Object.keys(payload).length === 0) {
+    return actionResponse(c, 'Нема измена за чување.', 400, true);
+  }
 
-  await db.update(folders).set(payload).where(eq(folders.id, folderId));
+  const [updated] = await db.update(folders).set(payload).where(and(
+    eq(folders.id, folderId),
+    quotaMaxRaw === null ? undefined : lte(folders.quotaUsed, quotaMaxRaw)
+  )).returning({ id: folders.id });
+  if (!updated) {
+    return actionResponse(c, 'Нова квота не сме бити мања од већ заузете.', 409, true);
+  }
   return actionResponse(c, 'Измена фолдера је сачувана.');
 });
 
@@ -446,12 +460,14 @@ secured.delete('/folder/:id', async (c) => {
     return actionResponse(c, 'Фолдер није пронађен.', 404, true);
   }
 
-  const hasFiles = await folderContainsFile(folderId);
-  if (hasFiles) {
+  const inFolder = db.select({ id: files.id }).from(files).where(eq(files.folderId, folders.id));
+  const [removed] = await db.delete(folders)
+    .where(and(eq(folders.id, folderId), notExists(inFolder)))
+    .returning({ id: folders.id });
+  if (!removed) {
     return actionResponse(c, 'Фолдер није празан. Прво обришите фајлове.', 409, true);
   }
 
-  await db.delete(folders).where(eq(folders.id, folderId));
   return actionResponse(c, 'Фолдер је обрисан.');
 });
 
@@ -464,7 +480,10 @@ secured.post('/apikey', async (c) => {
 
   const canUpload = asBoolean(body.can_upload);
   const canDelete = asBoolean(body.can_delete);
-  const rateLimitOverride = asNullableNumber(body.rate_limit_override);
+  const rateLimitOverride = body.rate_limit_override === undefined ? null : parseRateLimitOverride(body.rate_limit_override);
+  if (rateLimitOverride === undefined) {
+    return actionResponse(c, INVALID_RATE_LIMIT, 400, true);
+  }
   const key = `sen_${nanoid(40)}`;
   const keyHash = hashApiKey(key);
 
@@ -526,18 +545,31 @@ secured.patch('/apikey/:id', async (c) => {
     return actionResponse(c, 'Неважећи ID АПИ кључа.', 400, true);
   }
 
-  const body = await c.req.parseBody();
-  const canUpload = asBoolean(body.can_upload);
-  const canDelete = asBoolean(body.can_delete);
-  const rateLimitOverride = asNullableNumber(body.rate_limit_override);
+  const contentType = c.req.header('Content-Type')?.split(';', 1)[0].trim().toLowerCase();
+  const body = contentType === 'application/json'
+    ? await c.req.json<Record<string, unknown>>().catch(() => null)
+    : await c.req.parseBody();
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return actionResponse(c, 'Неважећи подаци за измену.', 400, true);
+  }
+
+  const payload: Partial<typeof apiKeys.$inferInsert> = {};
+  if (body.can_upload !== undefined) payload.canUpload = asBoolean(body.can_upload);
+  if (body.can_delete !== undefined) payload.canDelete = asBoolean(body.can_delete);
+  if (body.rate_limit_override !== undefined) {
+    const rateLimitOverride = parseRateLimitOverride(body.rate_limit_override);
+    if (rateLimitOverride === undefined) {
+      return actionResponse(c, INVALID_RATE_LIMIT, 400, true);
+    }
+    payload.rateLimitOverride = rateLimitOverride;
+  }
+  if (Object.keys(payload).length === 0) {
+    return actionResponse(c, 'Нема измена за чување.', 400, true);
+  }
 
   const updated = await db
     .update(apiKeys)
-    .set({
-      canUpload,
-      canDelete,
-      rateLimitOverride
-    })
+    .set(payload)
     .where(eq(apiKeys.id, id))
     .returning();
 

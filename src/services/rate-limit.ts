@@ -1,13 +1,13 @@
 import { eq } from 'drizzle-orm';
 import type { Context } from 'hono';
 import { db, redis } from '../db/client.ts';
-import { apiKeys, files, folders } from '../db/schema.ts';
+import { folders, type ApiKey, type FileRow } from '../db/schema.ts';
 import { readSettings } from './settings.ts';
 
 type RateLimitInput = {
-  fileId?: number;
+  file?: Pick<FileRow, 'id' | 'folderId' | 'rateLimitOverride'>;
   folderId?: number;
-  apiKeyId?: number;
+  apiKey?: Pick<ApiKey, 'id' | 'rateLimitOverride'>;
 };
 
 export type TrafficStats = {
@@ -98,37 +98,28 @@ function clientAddress(c: Context) {
   return forwarded.split(',')[0]?.trim() || 'unknown';
 }
 
-async function resolveLimit(input: RateLimitInput) {
-  if (input.fileId) {
-    const file = await db.query.files.findFirst({ where: eq(files.id, input.fileId) });
-    if (file?.rateLimitOverride !== null && file?.rateLimitOverride !== undefined) {
-      return { limit: file.rateLimitOverride, scope: `file:${file.id}` };
-    }
-    if (input.folderId === undefined) {
-      input.folderId = file?.folderId;
-    }
+async function resolveLimit({ file, folderId, apiKey }: RateLimitInput) {
+  if (file && file.rateLimitOverride !== null) {
+    return { limit: file.rateLimitOverride, scope: `file:${file.id}` };
   }
 
-  if (input.folderId) {
-    const folder = await db.query.folders.findFirst({ where: eq(folders.id, input.folderId) });
-    if (folder?.rateLimitOverride !== null && folder?.rateLimitOverride !== undefined) {
+  const targetFolderId = file?.folderId ?? folderId;
+  if (targetFolderId !== undefined) {
+    const folder = await db.query.folders.findFirst({ where: eq(folders.id, targetFolderId) });
+    if (folder && folder.rateLimitOverride !== null) {
       return { limit: folder.rateLimitOverride, scope: `folder:${folder.id}` };
     }
   }
 
-  if (input.apiKeyId) {
-    const key = await db.query.apiKeys.findFirst({ where: eq(apiKeys.id, input.apiKeyId) });
-    if (key?.rateLimitOverride !== null && key?.rateLimitOverride !== undefined) {
-      return { limit: key.rateLimitOverride, scope: `api:${key.id}` };
-    }
+  if (apiKey && apiKey.rateLimitOverride !== null) {
+    return { limit: apiKey.rateLimitOverride, scope: `api:${apiKey.id}` };
   }
 
   const global = await readSettings();
   return { limit: global.globalRateLimit, scope: 'global' };
 }
 
-async function trackTraffic(input: RateLimitInput) {
-  const minute = currentMinuteStamp();
+async function trackTraffic(minute: number, apiKeyId?: number) {
   const day = utcDayStamp();
   const pipeline = redis.pipeline();
 
@@ -136,12 +127,12 @@ async function trackTraffic(input: RateLimitInput) {
   pipeline.incr(TRAFFIC_KEY.minute(minute));
   pipeline.expire(TRAFFIC_KEY.minute(minute), TRAFFIC_MINUTE_TTL);
 
-  if (input.apiKeyId) {
-    pipeline.incr(TRAFFIC_KEY.apiTotal(input.apiKeyId));
-    pipeline.incr(TRAFFIC_KEY.apiMinute(input.apiKeyId, minute));
-    pipeline.expire(TRAFFIC_KEY.apiMinute(input.apiKeyId, minute), TRAFFIC_MINUTE_TTL);
-    pipeline.incr(TRAFFIC_KEY.apiDay(input.apiKeyId, day));
-    pipeline.expire(TRAFFIC_KEY.apiDay(input.apiKeyId, day), TRAFFIC_DAY_TTL);
+  if (apiKeyId !== undefined) {
+    pipeline.incr(TRAFFIC_KEY.apiTotal(apiKeyId));
+    pipeline.incr(TRAFFIC_KEY.apiMinute(apiKeyId, minute));
+    pipeline.expire(TRAFFIC_KEY.apiMinute(apiKeyId, minute), TRAFFIC_MINUTE_TTL);
+    pipeline.incr(TRAFFIC_KEY.apiDay(apiKeyId, day));
+    pipeline.expire(TRAFFIC_KEY.apiDay(apiKeyId, day), TRAFFIC_DAY_TTL);
   } else {
     pipeline.incr(TRAFFIC_KEY.publicTotal);
     pipeline.incr(TRAFFIC_KEY.publicMinute(minute));
@@ -213,15 +204,22 @@ export async function readTrafficStats(apiKeyIds: number[]): Promise<TrafficStat
 }
 
 export async function enforceRateLimit(c: Context, input: RateLimitInput) {
-  const { limit, scope } = await resolveLimit({ ...input });
+  const { limit, scope } = await resolveLimit(input);
+  const apiKeyId = input.apiKey?.id;
+  const now = Date.now();
+  const minute = Math.floor(now / 60_000);
+
+  c.header('X-RateLimit-Limit', String(limit));
+  c.header('X-RateLimit-Scope', scope.split(':')[0]);
 
   if (limit <= 0) {
-    await trackTraffic(input);
+    await trackTraffic(minute, apiKeyId);
+    c.header('X-RateLimit-Remaining', '0');
+    c.header('Cache-Control', 'no-store');
     return c.json({ greska: 'Лимит захтева је постављен на 0.' }, 429);
   }
 
-  const actor = input.apiKeyId ? `api:${input.apiKeyId}` : `ip:${clientAddress(c)}`;
-  const minute = Math.floor(Date.now() / 60_000);
+  const actor = apiKeyId !== undefined ? `api:${apiKeyId}` : `ip:${clientAddress(c)}`;
   const key = `rl:${scope}:${actor}:${minute}`;
 
   const counter = await redis.incr(key);
@@ -229,12 +227,13 @@ export async function enforceRateLimit(c: Context, input: RateLimitInput) {
     await redis.expire(key, 61);
   }
 
-  await trackTraffic(input);
+  await trackTraffic(minute, apiKeyId);
 
-  c.header('X-RateLimit-Limit', String(limit));
   c.header('X-RateLimit-Remaining', String(Math.max(limit - counter, 0)));
 
   if (counter > limit) {
+    c.header('Cache-Control', 'no-store');
+    c.header('Retry-After', String(Math.ceil(((minute + 1) * 60_000 - now) / 1000)));
     return c.json({ greska: 'Прекорачен лимит захтева.' }, 429);
   }
 }

@@ -19,8 +19,15 @@ export async function writeUpload(folderIme: string, source: File) {
   const fileName = `${Date.now()}-${nanoid(8)}-${base}`;
   const fullPath = path.join(folderPath, fileName);
 
-  await Bun.write(fullPath, source);
-  return fullPath;
+  try {
+    await Bun.write(fullPath, source);
+    return fullPath;
+  } catch (error) {
+    await deleteStoredFile(fullPath).catch(cleanupError => {
+      console.error('Грешка при чишћењу делимично уписаног фајла:', cleanupError);
+    });
+    throw error;
+  }
 }
 
 export async function deleteStoredFile(serverPath: string) {

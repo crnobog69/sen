@@ -30,7 +30,7 @@ privateRoutes.use('*', apiKeyAuth);
 privateRoutes.get('/files', async (c) => {
   const apiKey = c.get('apiKey');
 
-  const limited = await enforceRateLimit(c, { apiKeyId: apiKey.id });
+  const limited = await enforceRateLimit(c, { apiKey });
   if (limited) {
     return limited;
   }
@@ -51,7 +51,7 @@ privateRoutes.get('/folder/:id', async (c) => {
     return c.json({ greska: 'Немате приступ том фолдеру.' }, 403);
   }
 
-  const limited = await enforceRateLimit(c, { folderId, apiKeyId: apiKey.id });
+  const limited = await enforceRateLimit(c, { folderId, apiKey });
   if (limited) {
     return limited;
   }
@@ -81,11 +81,7 @@ privateRoutes.get('/file/:id', async (c) => {
     return c.json({ greska: 'Фајл није пронађен или није додељен.' }, 404);
   }
 
-  const limited = await enforceRateLimit(c, {
-    fileId: file.id,
-    folderId: file.folderId,
-    apiKeyId: apiKey.id
-  });
+  const limited = await enforceRateLimit(c, { file, apiKey });
   if (limited) {
     return limited;
   }
@@ -119,7 +115,7 @@ privateRoutes.post('/upload/:folder_id', async (c) => {
     return c.json({ greska: 'Фолдер није додељен овом АПИ кључу.' }, 403);
   }
 
-  const limited = await enforceRateLimit(c, { folderId, apiKeyId: apiKey.id });
+  const limited = await enforceRateLimit(c, { folderId, apiKey });
   if (limited) {
     return limited;
   }
@@ -171,11 +167,7 @@ privateRoutes.delete('/file/:id', async (c) => {
     return c.json({ greska: 'Фајл није додељен овом АПИ кључу.' }, 403);
   }
 
-  const limited = await enforceRateLimit(c, {
-    fileId: accessible.id,
-    folderId: accessible.folderId,
-    apiKeyId: apiKey.id
-  });
+  const limited = await enforceRateLimit(c, { file: accessible, apiKey });
   if (limited) {
     return limited;
   }
@@ -203,7 +195,7 @@ privateRoutes.get('/quota/:folder_id', async (c) => {
     return c.json({ greska: 'Фолдер није додељен овом АПИ кључу.' }, 403);
   }
 
-  const limited = await enforceRateLimit(c, { folderId, apiKeyId: apiKey.id });
+  const limited = await enforceRateLimit(c, { folderId, apiKey });
   if (limited) {
     return limited;
   }
