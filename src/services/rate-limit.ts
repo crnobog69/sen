@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import type { Context } from 'hono';
-import { db, redis } from '../db/client.ts';
+import type { ChainableCommander } from 'ioredis';
+import { db, withRedis } from '../db/client.ts';
 import { folders, type ApiKey, type FileRow } from '../db/schema.ts';
 import { readSettings } from './settings.ts';
 
@@ -119,29 +120,39 @@ async function resolveLimit({ file, folderId, apiKey }: RateLimitInput) {
   return { limit: global.globalRateLimit, scope: 'global' };
 }
 
+async function redisPipeline(addCommands: (pipeline: ChainableCommander) => void) {
+  return withRedis(async (connection) => {
+    const pipeline = connection.pipeline();
+    addCommands(pipeline);
+    const rows = await pipeline.exec();
+    if (!rows) throw new Error('Redis pipeline did not return any results');
+    const failure = rows.find(([error]) => error);
+    if (failure) throw failure[0];
+    return rows;
+  });
+}
+
 async function trackTraffic(minute: number, apiKeyId?: number) {
   const day = utcDayStamp();
-  const pipeline = redis.pipeline();
+  await redisPipeline((pipeline) => {
+    pipeline.incr(TRAFFIC_KEY.total);
+    pipeline.incr(TRAFFIC_KEY.minute(minute));
+    pipeline.expire(TRAFFIC_KEY.minute(minute), TRAFFIC_MINUTE_TTL);
 
-  pipeline.incr(TRAFFIC_KEY.total);
-  pipeline.incr(TRAFFIC_KEY.minute(minute));
-  pipeline.expire(TRAFFIC_KEY.minute(minute), TRAFFIC_MINUTE_TTL);
-
-  if (apiKeyId !== undefined) {
-    pipeline.incr(TRAFFIC_KEY.apiTotal(apiKeyId));
-    pipeline.incr(TRAFFIC_KEY.apiMinute(apiKeyId, minute));
-    pipeline.expire(TRAFFIC_KEY.apiMinute(apiKeyId, minute), TRAFFIC_MINUTE_TTL);
-    pipeline.incr(TRAFFIC_KEY.apiDay(apiKeyId, day));
-    pipeline.expire(TRAFFIC_KEY.apiDay(apiKeyId, day), TRAFFIC_DAY_TTL);
-  } else {
-    pipeline.incr(TRAFFIC_KEY.publicTotal);
-    pipeline.incr(TRAFFIC_KEY.publicMinute(minute));
-    pipeline.expire(TRAFFIC_KEY.publicMinute(minute), TRAFFIC_MINUTE_TTL);
-    pipeline.incr(TRAFFIC_KEY.publicDay(day));
-    pipeline.expire(TRAFFIC_KEY.publicDay(day), TRAFFIC_DAY_TTL);
-  }
-
-  await pipeline.exec();
+    if (apiKeyId !== undefined) {
+      pipeline.incr(TRAFFIC_KEY.apiTotal(apiKeyId));
+      pipeline.incr(TRAFFIC_KEY.apiMinute(apiKeyId, minute));
+      pipeline.expire(TRAFFIC_KEY.apiMinute(apiKeyId, minute), TRAFFIC_MINUTE_TTL);
+      pipeline.incr(TRAFFIC_KEY.apiDay(apiKeyId, day));
+      pipeline.expire(TRAFFIC_KEY.apiDay(apiKeyId, day), TRAFFIC_DAY_TTL);
+    } else {
+      pipeline.incr(TRAFFIC_KEY.publicTotal);
+      pipeline.incr(TRAFFIC_KEY.publicMinute(minute));
+      pipeline.expire(TRAFFIC_KEY.publicMinute(minute), TRAFFIC_MINUTE_TTL);
+      pipeline.incr(TRAFFIC_KEY.publicDay(day));
+      pipeline.expire(TRAFFIC_KEY.publicDay(day), TRAFFIC_DAY_TTL);
+    }
+  });
 }
 
 function asCounter(raw: unknown) {
@@ -153,25 +164,23 @@ export async function readTrafficStats(apiKeyIds: number[]): Promise<TrafficStat
   const minute = currentMinuteStamp();
   const dayStamps = Array.from({ length: MAX_WINDOW_DAYS }, (_, idx) => utcDayStamp(idx));
 
-  const pipeline = redis.pipeline();
-  pipeline.get(TRAFFIC_KEY.total);
-  pipeline.get(TRAFFIC_KEY.minute(minute));
-  pipeline.get(TRAFFIC_KEY.publicTotal);
-  pipeline.get(TRAFFIC_KEY.publicMinute(minute));
-  for (const stamp of dayStamps) {
-    pipeline.get(TRAFFIC_KEY.publicDay(stamp));
-  }
-
-  for (const apiKeyId of apiKeyIds) {
-    pipeline.get(TRAFFIC_KEY.apiTotal(apiKeyId));
-    pipeline.get(TRAFFIC_KEY.apiMinute(apiKeyId, minute));
+  const rows = await redisPipeline((pipeline) => {
+    pipeline.get(TRAFFIC_KEY.total);
+    pipeline.get(TRAFFIC_KEY.minute(minute));
+    pipeline.get(TRAFFIC_KEY.publicTotal);
+    pipeline.get(TRAFFIC_KEY.publicMinute(minute));
     for (const stamp of dayStamps) {
-      pipeline.get(TRAFFIC_KEY.apiDay(apiKeyId, stamp));
+      pipeline.get(TRAFFIC_KEY.publicDay(stamp));
     }
-  }
 
-  const output = await pipeline.exec();
-  const rows = output ?? [];
+    for (const apiKeyId of apiKeyIds) {
+      pipeline.get(TRAFFIC_KEY.apiTotal(apiKeyId));
+      pipeline.get(TRAFFIC_KEY.apiMinute(apiKeyId, minute));
+      for (const stamp of dayStamps) {
+        pipeline.get(TRAFFIC_KEY.apiDay(apiKeyId, stamp));
+      }
+    }
+  });
 
   let idx = 0;
   const totalRequests = asCounter(rows[idx++]?.[1]);
@@ -222,10 +231,13 @@ export async function enforceRateLimit(c: Context, input: RateLimitInput) {
   const actor = apiKeyId !== undefined ? `api:${apiKeyId}` : `ip:${clientAddress(c)}`;
   const key = `rl:${scope}:${actor}:${minute}`;
 
-  const counter = await redis.incr(key);
-  if (counter === 1) {
-    await redis.expire(key, 61);
-  }
+  const counter = await withRedis(async (connection) => {
+    const count = await connection.incr(key);
+    if (count === 1) {
+      await connection.expire(key, 61);
+    }
+    return count;
+  });
 
   await trackTraffic(minute, apiKeyId);
 

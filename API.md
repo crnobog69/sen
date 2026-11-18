@@ -74,6 +74,7 @@ Kad se predje limit: `429` + `{"greska":"Прекорачен лимит зах�
 Zaglavlje `Retry-After` daje broj sekundi do sledećeg minutnog prozora.
 
 Ako je limit postavljen na `0`, takodje `429`.
+Ako Redis nije dostupan, rute koje proveravaju limit vraćaju `503` sa zaglavljem `Retry-After`.
 
 ## Quota (storage)
 
@@ -91,6 +92,7 @@ Vraca javni fajl (`public=true`). Ako fajl nije javan ili ne postoji, vraca `404
 Sa validnim `X-API-Key` primenjuje se isti prioritet limita kao i kod privatnih ruta.
 Ako je zaglavlje poslato sa nevažećim ključem, zahtev za javni fajl vraća `401`.
 Ako fajl ima izracunat hash, odgovor sadrzi `ETag: "sha256-<contentHash>"`.
+Zahtev sa odgovarajućim `If-None-Match` dobija `304` bez sadržaja. Odgovor bez API ključa može da se kešira 60 sekundi, posle čega se ponovo proverava. Odgovori na zahteve sa ključem imaju `Cache-Control: private, no-store`.
 
 Primer:
 

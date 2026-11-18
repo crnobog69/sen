@@ -1,5 +1,6 @@
 import { escapeHtml } from '../services/format.ts';
 import { apiKeyFingerprint } from '../services/api-keys.ts';
+import type { TrafficStats } from '../services/rate-limit.ts';
 
 type Notice = {
   text: string;
@@ -49,31 +50,7 @@ export type DashboardData = {
     globalRateLimit: number;
     globalDefaultQuota: number;
   };
-  traffic: {
-    totalRequests: number;
-    minuteRequests: number;
-    publicTotalRequests: number;
-    publicMinuteRequests: number;
-    publicWindows: {
-      d1: number;
-      m1: number;
-      m3: number;
-      m6: number;
-      m12: number;
-    };
-    apiKeyStats: Array<{
-      apiKeyId: number;
-      totalRequests: number;
-      minuteRequests: number;
-      windows: {
-        d1: number;
-        m1: number;
-        m3: number;
-        m6: number;
-        m12: number;
-      };
-    }>;
-  };
+  traffic: TrafficStats | null;
   folders: FolderView[];
   selectedFolderId?: number;
   folderPage: { page: number; pages: number };
@@ -98,7 +75,8 @@ function formatGb(bytes: number) {
   return (bytes / BYTES_IN_GB).toFixed(2);
 }
 
-function formatCount(value: number) {
+function formatCount(value: number | undefined) {
+  if (value === undefined) return '—';
   return new Intl.NumberFormat('sr-RS').format(Math.max(0, Math.floor(value)));
 }
 
@@ -1980,8 +1958,9 @@ export function renderDashboardContent(data: DashboardData) {
     fileAccess.set(file.id, set);
   }
 
-  const trafficByApi = new Map(data.traffic.apiKeyStats.map((row) => [row.apiKeyId, row]));
-  const homeTrafficRows = data.apiKeys
+  const traffic = data.traffic;
+  const trafficByApi = new Map(traffic?.apiKeyStats.map((row) => [row.apiKeyId, row]));
+  const homeTrafficRows = (traffic ? data.apiKeys : [])
     .map((key) => {
       const row = trafficByApi.get(key.id);
       return {
@@ -2297,7 +2276,7 @@ export function renderDashboardContent(data: DashboardData) {
         <article class="panel">
           <header class="panel-head">
             <h3 class="panel-title"><i data-lucide="layout-dashboard"></i> Админ</h3>
-            <span class="quota-chip">Проток уживо</span>
+            <span class="quota-chip">${traffic ? 'Проток уживо' : 'Статистика саобраћаја тренутно није доступна.'}</span>
           </header>
           <div class="panel-body stack">
             <p class="hero-tag">СЕН MONITOR</p>
@@ -2305,19 +2284,19 @@ export function renderDashboardContent(data: DashboardData) {
             <div class="kpi-grid">
               <article class="kpi">
                 <span class="kpi-label">Укупно захтева</span>
-                <strong class="kpi-value">${formatCount(data.traffic.totalRequests)}</strong>
+                <strong class="kpi-value">${formatCount(traffic?.totalRequests)}</strong>
               </article>
               <article class="kpi">
                 <span class="kpi-label">Тренутни минут</span>
-                <strong class="kpi-value">${formatCount(data.traffic.minuteRequests)}</strong>
+                <strong class="kpi-value">${formatCount(traffic?.minuteRequests)}</strong>
               </article>
               <article class="kpi">
                 <span class="kpi-label">Јавни захтеви (укупно)</span>
-                <strong class="kpi-value">${formatCount(data.traffic.publicTotalRequests)}</strong>
+                <strong class="kpi-value">${formatCount(traffic?.publicTotalRequests)}</strong>
               </article>
               <article class="kpi">
                 <span class="kpi-label">Јавни захтеви (минут)</span>
-                <strong class="kpi-value">${formatCount(data.traffic.publicMinuteRequests)}</strong>
+                <strong class="kpi-value">${formatCount(traffic?.publicMinuteRequests)}</strong>
               </article>
               <article class="kpi">
                 <span class="kpi-label">Глобално заузеће</span>
@@ -2328,11 +2307,11 @@ export function renderDashboardContent(data: DashboardData) {
               </article>
             </div>
             <div class="cluster">
-              <span class="status-chip">Јавно 1д: ${formatCount(data.traffic.publicWindows.d1)}</span>
-              <span class="status-chip">Јавно 1м: ${formatCount(data.traffic.publicWindows.m1)}</span>
-              <span class="status-chip">Јавно 3м: ${formatCount(data.traffic.publicWindows.m3)}</span>
-              <span class="status-chip">Јавно 6м: ${formatCount(data.traffic.publicWindows.m6)}</span>
-              <span class="status-chip">Јавно 12м: ${formatCount(data.traffic.publicWindows.m12)}</span>
+              <span class="status-chip">Јавно 1д: ${formatCount(traffic?.publicWindows.d1)}</span>
+              <span class="status-chip">Јавно 1м: ${formatCount(traffic?.publicWindows.m1)}</span>
+              <span class="status-chip">Јавно 3м: ${formatCount(traffic?.publicWindows.m3)}</span>
+              <span class="status-chip">Јавно 6м: ${formatCount(traffic?.publicWindows.m6)}</span>
+              <span class="status-chip">Јавно 12м: ${formatCount(traffic?.publicWindows.m12)}</span>
             </div>
           </div>
         </article>
@@ -2342,7 +2321,7 @@ export function renderDashboardContent(data: DashboardData) {
             <h3 class="panel-title"><i data-lucide="activity"></i> По API кључу</h3>
           </header>
           <div class="panel-body traffic-list">
-            ${homeTraffic || '<span class="text-muted">Нема саобраћаја по API кључевима.</span>'}
+            ${homeTraffic || `<span class="text-muted">${traffic ? 'Нема саобраћаја по API кључевима.' : 'Статистика није доступна.'}</span>`}
           </div>
         </article>
       </div>

@@ -10,7 +10,7 @@ export const publicRoutes = new Hono();
 publicRoutes.get('/f/:public_id', async (c) => {
   const rawKey = c.req.header('X-API-Key');
   c.header('Vary', 'X-API-Key', { append: true });
-  if (rawKey !== undefined) c.header('Cache-Control', 'private, no-store');
+  c.header('Cache-Control', rawKey === undefined ? 'no-store' : 'private, no-store');
 
   const publicId = c.req.param('public_id');
 
@@ -37,9 +37,14 @@ publicRoutes.get('/f/:public_id', async (c) => {
     return c.json({ greska: 'Фајл не постоји на диску.' }, 404);
   }
 
-  if (!apiKey) c.header('Cache-Control', 'public, max-age=31536000, immutable');
-  if (file.contentHash) {
-    c.header('ETag', `"sha256-${file.contentHash}"`);
+  if (!apiKey) c.header('Cache-Control', 'public, max-age=60, must-revalidate');
+  const etag = file.contentHash ? `"sha256-${file.contentHash}"` : undefined;
+  if (etag) c.header('ETag', etag);
+
+  const ifNoneMatch = c.req.header('If-None-Match')?.trim();
+  const tags = ifNoneMatch?.match(/(?:W\/)?"[^"]*"/g) ?? [];
+  if (ifNoneMatch === '*' || (etag && tags.some((tag) => tag.replace(/^W\//, '') === etag))) {
+    return c.body(null, 304);
   }
   return c.newResponse(payload.stream(), 200, {
     'Content-Type': payload.type || 'application/octet-stream'

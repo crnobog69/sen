@@ -5,7 +5,7 @@ import { Hono, type Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { nanoid } from 'nanoid';
 import { config } from '../config.ts';
-import { db, redis } from '../db/client.ts';
+import { db, RedisUnavailableError, withRedis } from '../db/client.ts';
 import { adminAuth } from '../middleware/admin-auth.ts';
 import {
   apiKeyFiles,
@@ -81,31 +81,33 @@ function loginError(
 }
 
 async function getLoginBlockSeconds(ip: string) {
-  const ttl = await redis.ttl(ADMIN_LOGIN_KEY.block(ip));
+  const ttl = await withRedis((connection) => connection.ttl(ADMIN_LOGIN_KEY.block(ip)));
   if (ttl > 0) {
     return ttl;
   }
   return null;
 }
 
-async function registerFailedLogin(ip: string) {
-  const failKey = ADMIN_LOGIN_KEY.fail(ip);
-  const attempts = await redis.incr(failKey);
-  if (attempts === 1) {
-    await redis.expire(failKey, ADMIN_LOGIN_WINDOW_SECONDS);
-  }
+function registerFailedLogin(ip: string) {
+  return withRedis(async (connection) => {
+    const failKey = ADMIN_LOGIN_KEY.fail(ip);
+    const attempts = await connection.incr(failKey);
+    if (attempts === 1) {
+      await connection.expire(failKey, ADMIN_LOGIN_WINDOW_SECONDS);
+    }
 
-  if (attempts >= ADMIN_LOGIN_MAX_ATTEMPTS) {
-    await redis.set(ADMIN_LOGIN_KEY.block(ip), '1', 'EX', ADMIN_LOGIN_BLOCK_SECONDS);
-    await redis.del(failKey);
-    return ADMIN_LOGIN_BLOCK_SECONDS;
-  }
+    if (attempts >= ADMIN_LOGIN_MAX_ATTEMPTS) {
+      await connection.set(ADMIN_LOGIN_KEY.block(ip), '1', 'EX', ADMIN_LOGIN_BLOCK_SECONDS);
+      await connection.del(failKey);
+      return ADMIN_LOGIN_BLOCK_SECONDS;
+    }
 
-  return null;
+    return null;
+  });
 }
 
 async function clearLoginGuard(ip: string) {
-  await redis.del(ADMIN_LOGIN_KEY.fail(ip), ADMIN_LOGIN_KEY.block(ip));
+  await withRedis((connection) => connection.del(ADMIN_LOGIN_KEY.fail(ip), ADMIN_LOGIN_KEY.block(ip)));
 }
 
 function gbToBytes(input: unknown): number | null {
@@ -167,7 +169,10 @@ async function loadDashboardData(params: URLSearchParams): Promise<DashboardData
   const [folderFiles, catalogFiles, traffic] = await Promise.all([
     selectedFolder ? listFiles(folderPage.page, selectedFolder.id) : [],
     listFiles(catalogPage.page),
-    readTrafficStats(keyRows.map((row) => row.id))
+    readTrafficStats(keyRows.map((row) => row.id)).catch((error) => {
+      if (error instanceof RedisUnavailableError) return null;
+      throw error;
+    })
   ]);
   const keyFilesRows = catalogFiles.length ? await db.select().from(apiKeyFiles)
     .where(inArray(apiKeyFiles.fileId, catalogFiles.map((f) => f.id))) : [];
@@ -510,11 +515,16 @@ secured.delete('/apikey/:id', async (c) => {
 
   await db.delete(apiKeys).where(eq(apiKeys.id, id));
   const minute = Math.floor(Date.now() / 60_000);
-  await redis.del(
-    `traffic:api:${id}:total`,
-    `traffic:api:${id}:minute:${minute}`,
-    `traffic:api:${id}:minute:${minute - 1}`
-  );
+  try {
+    await withRedis((connection) => connection.del(
+      `traffic:api:${id}:total`,
+      `traffic:api:${id}:minute:${minute}`,
+      `traffic:api:${id}:minute:${minute - 1}`
+    ));
+  } catch (error) {
+    if (!(error instanceof RedisUnavailableError)) throw error;
+    console.warn(`Статистика обрисаног АПИ кључа #${id} није очишћена из Redis-а.`);
+  }
   return actionResponse(c, 'АПИ кључ је обрисан.');
 });
 

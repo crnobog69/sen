@@ -11,6 +11,7 @@ process.env.DATABASE_URL = ':memory:';
 process.env.UPLOAD_ROOT = path.join(directory, 'uploads');
 process.env.ADMIN_COOKIE_SECRET = 'dashboard-test-only';
 mock.module('ioredis', () => ({ default: class {
+  status = 'ready';
   private counters = new Map<string, number>();
 
   incr(key: string) {
@@ -31,8 +32,9 @@ mock.module('ioredis', () => ({ default: class {
     };
   }
 } }));
-const { db } = await import('../src/db/client');
+const { db, redis } = await import('../src/db/client');
 const { bootstrapDatabase } = await import('../src/db/bootstrap');
+const { handleServerError } = await import('../src/middleware/server-error');
 const { adminRoutes } = await import('../src/routes/admin');
 const { privateRoutes } = await import('../src/routes/private');
 const { publicRoutes } = await import('../src/routes/public');
@@ -44,7 +46,8 @@ afterAll(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-const app = new Hono().route('/admin', adminRoutes).route('/private', privateRoutes).route('/', publicRoutes);
+const app = new Hono().onError(handleServerError)
+  .route('/admin', adminRoutes).route('/private', privateRoutes).route('/', publicRoutes);
 const cookie = await serializeSigned('sen_admin', '1', process.env.ADMIN_COOKIE_SECRET);
 
 test('large folders and access assignments stay paginated after admin actions', async () => {
@@ -178,4 +181,69 @@ test('simultaneous uploads and repeat deletes keep the folder quota accurate', a
   expect((await app.request('/admin/folder/101', { method: 'DELETE', headers: { cookie } })).status).toBe(409);
   await deleteFileRecord(keep.id);
   expect((await app.request('/admin/folder/101', { method: 'DELETE', headers: { cookie } })).status).toBe(200);
+});
+
+test('Redis outages return 503 for protected requests and keep the signed-in dashboard available', async () => {
+  const created = await app.request('/admin/apikey', {
+    method: 'POST', headers: { cookie },
+    body: new URLSearchParams({ ime: 'redis-outage', rate_limit_override: '10' })
+  });
+  expect(created.status).toBe(201);
+  const { key } = await created.json();
+  const request = () => app.request('/private/files', { headers: { 'X-API-Key': key } });
+
+  redis.status = 'reconnecting';
+  try {
+    const unavailable = await request();
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.headers.get('Retry-After')).toBe('2');
+    expect(unavailable.headers.get('Cache-Control')).toBe('no-store');
+
+    const login = await app.request('/admin/login', { method: 'POST' });
+    expect(login.status).toBe(503);
+
+    const dashboard = await app.request('/admin/dash/content', { headers: { cookie } });
+    expect(dashboard.status).toBe(200);
+    expect(await dashboard.text()).toContain('Статистика саобраћаја тренутно није доступна.');
+  } finally {
+    redis.status = 'ready';
+  }
+
+  const stalledCommand = spyOn(redis, 'incr').mockRejectedValueOnce(new Error('Command timed out'));
+  try {
+    expect((await request()).status).toBe(503);
+  } finally {
+    stalledCommand.mockRestore();
+  }
+  expect((await request()).status).toBe(200);
+});
+
+test('public download revalidation checks ETags and current visibility', async () => {
+  const body = 'cache fixture';
+  const file = await createFileRecord({
+    folderId: 100, file: new File([body], 'cache.txt'), isPublic: true, rateLimitOverride: 10
+  });
+  const url = '/f/' + file.publicId;
+  const request = (etag: string) => app.request(url, { headers: { 'If-None-Match': etag } });
+
+  const initial = await request('"different"');
+  expect(initial.status).toBe(200);
+  expect(await initial.text()).toBe(body);
+  const cachePolicy = 'public, max-age=60, must-revalidate';
+  expect(initial.headers.get('Cache-Control')).toBe(cachePolicy);
+  const etag = initial.headers.get('ETag');
+  expect(etag).toMatch(/^"sha256-[a-f0-9]{64}"$/);
+
+  const unchanged = await request(`"unrelated, quoted tag", W/${etag}`);
+  expect(unchanged.status).toBe(304);
+  expect(await unchanged.text()).toBe('');
+  expect(unchanged.headers.get('ETag')).toBe(etag);
+  expect(unchanged.headers.get('Cache-Control')).toBe(cachePolicy);
+  expect(unchanged.headers.get('Vary')).toContain('X-API-Key');
+  expect((await request('*')).status).toBe(304);
+
+  await db.run(sql`UPDATE files SET public=0 WHERE id=${file.id}`);
+  const hidden = await request(etag!);
+  expect(hidden.status).toBe(404);
+  expect(hidden.headers.get('Cache-Control')).toBe('no-store');
 });

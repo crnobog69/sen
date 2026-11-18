@@ -2,7 +2,7 @@ import path from 'node:path';
 import { Hono } from 'hono';
 import { config } from './config.ts';
 import { bootstrapDatabase } from './db/bootstrap.ts';
-import { redis } from './db/client.ts';
+import { handleServerError } from './middleware/server-error.ts';
 import { adminRoutes } from './routes/admin.ts';
 import { privateRoutes } from './routes/private.ts';
 import { publicRoutes } from './routes/public.ts';
@@ -153,14 +153,10 @@ app.route('/', publicRoutes);
 app.route('/private', privateRoutes);
 app.route('/admin', adminRoutes);
 
-app.onError((error, c) => {
-  console.error(error);
-  return c.json({ greska: 'Интерна грешка сервера.' }, 500);
-});
+app.onError(handleServerError);
 
 await bootstrapDatabase();
 await ensureUploadRoot();
-await redis.ping();
 
 Bun.serve({
   fetch: app.fetch,
