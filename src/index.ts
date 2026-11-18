@@ -100,7 +100,7 @@ function renderLandingPage() {
       <h1>SEN</h1>
       <p>„Сен“ је назив изведен из српске речи „сенка“.</p>
       <p>Овај CDN је намењен искључиво за сврхе CRNBG.ORG.</p>
-      <p>Изворни код је на Gitcrn (приватни Gitea сервер), није отвореног кода. За преглед кода јавите се на <a href="mailto:admin@crnbg.org">admin@crnbg.org</a>.</p>
+      <p>Изворни код је доступан на <a href="https://github.com/crnobog69/sen">GitHub-у</a>.</p>
       <p>Други могу да затраже API кључ путем: <a href="mailto:admin@crnbg.org">admin@crnbg.org</a>.</p>
       <div class="actions">
         <a href="/admin">Админ панел</a>

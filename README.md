@@ -53,15 +53,15 @@ bun run dev
 
 Подразумевани URL је `http://0.0.0.0:9995`.
 
-### Docker izdanje na Gitcrn-u
+### Docker izdanje na GitHubu
 
-U Gitcrn podešavanjima naloga, u **Applications**, napravi token sa dozvolom `write:package`. U **Settings → Actions → Secrets** repozitorijuma ili vlasnika dodaj `REGISTRY_USERNAME` (nalog vlasnika tokena) i `REGISTRY_TOKEN` (vrednost tokena). Nalog mora imati pravo objave paketa za vlasnika slike.
+U direktorijumu projekta pokreni `.\docker-build.ps1` na Windowsu ili `bash docker-build.sh` na Linuxu. Skripta snima lokalne izmene i šalje trenutnu granu i tag na oba remote-a, `gitcrn` i `github`. Tag koristi beogradsko vreme u formatu `DD.MM.YYYY_HH-mm-ss`. Za lokalni build koristi `-Local` ili `--local`.
 
-U direktorijumu projekta pokreni `.\docker-build.ps1` na Windowsu ili `bash docker-build.sh` na Linuxu. Skripta snima lokalne izmene i šalje trenutnu granu i tag na Gitcrn. Tag koristi beogradsko vreme u formatu `DD.MM.YYYY_HH-mm-ss`. Runner `linux_amd64` objavljuje isti tag i `latest` za AMD64 i ARM64. Za lokalni build koristi `-Local` ili `--local`.
+GitHub Actions objavljuje slike `ghcr.io/crnobog69/sen:latest` i `ghcr.io/crnobog69/sen:<tag>` za AMD64 i ARM64. Workflow se pokreće na tag, ručno ili kao provera pull requesta. Prijava za objavu koristi ugrađeni `GITHUB_TOKEN` i dozvolu `packages: write`. Kod se čuva i na Gitcrn-u, a build je ograničen na GitHub.
 
-Gitcrn registry radi preko HTTP-a na internoj mreži. Na Docker mašinama koje se prijavljuju ili povlače sliku, u postojeću listu `insecure-registries` Docker daemon-a dodaj `100.91.132.35:5000` i primeni podešavanje. Za privatne slike prijavi se sa `docker login 100.91.132.35:5000` (za preuzimanje je dovoljan token sa `read:package`).
+Compose koristi `ghcr.io/crnobog69/sen:latest` i `pull_policy: always`. U postojećem `.env` promeni `SEN_IMAGE` ako pokazuje na stari registry. Za određeno izdanje postavi punu putanju sa konkretnim tagom.
 
-Compose podrazumevano koristi `100.91.132.35:5000/vltc/sen:latest`. U `.env` možeš postaviti `SEN_IMAGE` na punu putanju sa konkretnim tagom. Za objavljenu sliku pokreni `docker compose pull`, pa `docker compose up -d`.
+Za preuzimanje javne slike pokreni `docker compose pull`, pa `docker compose up -d`. Ako je GHCR paket privatan, prijavi se komandom `docker login ghcr.io` pomoću GitHub korisničkog imena i tokena sa dozvolom `read:packages`.
 
 ## Руте
 

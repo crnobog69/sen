@@ -2474,7 +2474,7 @@ export function renderDashboardContent(data: DashboardData) {
               Власништво: <strong>crnobog / crnijada / vltc</strong> је иста особа.
             </p>
             <p class="about-lead">
-              Изворни код је на Gitcrn (приватни Gitea сервер). За преглед кода јавите се на <strong>admin@crnbg.org</strong>.
+              Изворни код је доступан на <a href="https://github.com/crnobog69/sen">GitHub-у</a>.
             </p>
             <p class="about-lead">Овај систем је намењен искључиво за приватне сврхе.</p>
             <div class="cluster">
