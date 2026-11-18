@@ -1,6 +1,6 @@
 services:
   sen-app:
-    image: ${SEN_IMAGE:-ghcr.io/crnobog69/sen:latest}
+    image: ghcr.io/crnobog69/sen:latest
     build: .
     pull_policy: always
     container_name: sen-app

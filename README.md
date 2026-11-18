@@ -59,7 +59,7 @@ U direktorijumu projekta pokreni `.\docker-build.ps1` na Windowsu ili `bash dock
 
 GitHub Actions objavljuje slike `ghcr.io/crnobog69/sen:latest` i `ghcr.io/crnobog69/sen:<tag>` za AMD64 i ARM64. Workflow se pokreće na tag, ručno ili kao provera pull requesta. Prijava za objavu koristi ugrađeni `GITHUB_TOKEN` i dozvolu `packages: write`. Kod se čuva i na Gitcrn-u, a build je ograničen na GitHub.
 
-Compose koristi `ghcr.io/crnobog69/sen:latest` i `pull_policy: always`. U postojećem `.env` promeni `SEN_IMAGE` ako pokazuje na stari registry. Za određeno izdanje postavi punu putanju sa konkretnim tagom.
+U `docker-compose.yml` su direktno postavljeni `image: ghcr.io/crnobog69/sen:latest` i `pull_policy: always`. Za određeno izdanje promeni tag u polju `image` tog fajla.
 
 Za preuzimanje javne slike pokreni `docker compose pull`, pa `docker compose up -d`. Ako je GHCR paket privatan, prijavi se komandom `docker login ghcr.io` pomoću GitHub korisničkog imena i tokena sa dozvolom `read:packages`.
 
